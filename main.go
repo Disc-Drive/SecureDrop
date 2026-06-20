@@ -265,6 +265,8 @@ func startWebServer() {
     http.HandleFunc("/logs", logs)
     http.HandleFunc("/open", openFile)
     http.HandleFunc("/download", download)
+    http.HandleFunc("/moveException", moveException)
+    http.HandleFunc("/ignoreException", ignoreException)
 
     if err := http.ListenAndServe(":8080", nil); err != nil {
         panic(err)
@@ -379,6 +381,23 @@ func renderPage(title string, active string, body string) string {
             background: #38bdf8;
             color: #0f172a;
             font-weight: bold;
+        }
+        .action-buttons form {
+            display: inline-block;
+            margin-right: 5px;
+        }
+        .action-buttons button {
+            padding: 6px 10px;
+            font-size: 14px;
+            margin-right: 5px;
+        }
+        .move-btn {
+            background: #10b981;
+            color: #ffffff;
+        }
+        .ignore-btn {
+            background: #6366f1;
+            color: #ffffff;
         }
         pre {
             white-space: pre-wrap;
@@ -529,7 +548,7 @@ func listFiles(w http.ResponseWriter, r *http.Request) {
     body.WriteString(`</div>`)
 
     body.WriteString(`<div class="card"><h2>Exceptions</h2>`)
-    body.WriteString(renderFileTable(exceptionFiles))
+    body.WriteString(renderExceptionTable(exceptionFiles))
     body.WriteString(`</div>`)
 
     page := renderPage("SecureDrop Files", "files", body.String())
@@ -622,6 +641,71 @@ func renderFileTable(files []ListedFile) string {
                     <div class="action-links">
                         <a href="` + openLink + `" class="open-link">Open</a>
                         <a href="` + downloadLink + `" class="download-link">Download</a>
+                    </div>
+                </td>
+            </tr>
+        `)
+    }
+
+    b.WriteString(`
+        </tbody>
+    </table>
+    `)
+
+    return b.String()
+}
+
+// ------ Render Exception Table ------
+
+func renderExceptionTable(files []ListedFile) string {
+    if len(files) == 0 {
+        return `<div class="empty">No exceptions yet.</div>`
+    }
+
+    var b strings.Builder
+
+    b.WriteString(`
+    <table class="file-table">
+        <thead>
+            <tr>
+                <th>Name</th>
+                <th>Folder</th>
+                <th>Size</th>
+                <th>Modified</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+    `)
+
+    for _, file := range files {
+        name := html.EscapeString(file.Name)
+        folder := html.EscapeString(file.Folder)
+        size := html.EscapeString(formatSize(file.Size))
+        modified := html.EscapeString(file.ModifiedAt.Format("2006-01-02 3:04 PM"))
+
+        b.WriteString(`
+            <tr>
+                <td>` + name + `</td>
+                <td class="muted">` + folder + `</td>
+                <td>` + size + `</td>
+                <td>` + modified + `</td>
+                <td>
+                    <div class="action-buttons">
+                        <form action="/moveException" method="post" style="display:inline;">
+                            <input type="hidden" name="path" value="` + url.QueryEscape(file.FullPath) + `">
+                            <input type="hidden" name="category" value="invoices">
+                            <button type="submit" class="move-btn">Move to invoices</button>
+                        </form>
+                        <form action="/moveException" method="post" style="display:inline;">
+                            <input type="hidden" name="path" value="` + url.QueryEscape(file.FullPath) + `">
+                            <input type="hidden" name="category" value="reports">
+                            <button type="submit" class="move-btn">Move to reports</button>
+                        </form>
+                        <form action="/ignoreException" method="post" style="display:inline;">
+                            <input type="hidden" name="path" value="` + url.QueryEscape(file.FullPath) + `">
+                            <button type="submit" class="ignore-btn">Ignore for now</button>
+                        </form>
                     </div>
                 </td>
             </tr>
@@ -764,4 +848,107 @@ func download(w http.ResponseWriter, r *http.Request) {
     safeName := strings.ReplaceAll(info.Name(), `"`, "")
     w.Header().Set("Content-Disposition", `attachment; filename="`+safeName+`"`)
     http.ServeFile(w, r, path)
+}
+
+// ------ Move Exception ------
+
+func moveException(w http.ResponseWriter, r *http.Request) {
+    if r.Method != http.MethodPost {
+        http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+        return
+    }
+
+    if err := r.ParseForm(); err != nil {
+        http.Error(w, "invalid form", http.StatusBadRequest)
+        return
+    }
+
+    rawPath := r.FormValue("path")
+    category := r.FormValue("category")
+
+    if rawPath == "" || category == "" {
+        http.Error(w, "missing path or category", http.StatusBadRequest)
+        return
+    }
+
+    path, err := resolveAllowedPath(rawPath)
+    if err != nil {
+        http.Error(w, "invalid path", http.StatusBadRequest)
+        return
+    }
+
+    // Verify the file is in the exceptions directory
+    absExceptions, err := filepath.Abs(exceptionDir)
+    if err != nil || !pathInside(absExceptions, path) {
+        http.Error(w, "file not in exceptions", http.StatusBadRequest)
+        return
+    }
+
+    info, err := os.Stat(path)
+    if err != nil || info.IsDir() {
+        http.Error(w, "file not found", http.StatusNotFound)
+        return
+    }
+
+    // Create destination directory
+    destDir := filepath.Join(outputDir, category)
+    if err := os.MkdirAll(destDir, 0755); err != nil {
+        http.Error(w, "failed to create destination", http.StatusInternalServerError)
+        return
+    }
+
+    // Move file with timestamped name
+    newName := fmt.Sprintf("%d_%s", time.Now().Unix(), info.Name())
+    destPath := filepath.Join(destDir, newName)
+
+    if err := os.Rename(path, destPath); err != nil {
+        http.Error(w, "failed to move file", http.StatusInternalServerError)
+        return
+    }
+
+    logAction(info.Name(), "moved", fmt.Sprintf("from=exceptions to=%s", category))
+    http.Redirect(w, r, "/files", http.StatusSeeOther)
+}
+
+// ------ Ignore Exception ------
+
+func ignoreException(w http.ResponseWriter, r *http.Request) {
+    if r.Method != http.MethodPost {
+        http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+        return
+    }
+
+    if err := r.ParseForm(); err != nil {
+        http.Error(w, "invalid form", http.StatusBadRequest)
+        return
+    }
+
+    rawPath := r.FormValue("path")
+
+    if rawPath == "" {
+        http.Error(w, "missing path", http.StatusBadRequest)
+        return
+    }
+
+    path, err := resolveAllowedPath(rawPath)
+    if err != nil {
+        http.Error(w, "invalid path", http.StatusBadRequest)
+        return
+    }
+
+    // Verify the file is in the exceptions directory
+    absExceptions, err := filepath.Abs(exceptionDir)
+    if err != nil || !pathInside(absExceptions, path) {
+        http.Error(w, "file not in exceptions", http.StatusBadRequest)
+        return
+    }
+
+    info, err := os.Stat(path)
+    if err != nil || info.IsDir() {
+        http.Error(w, "file not found", http.StatusNotFound)
+        return
+    }
+
+    logAction(info.Name(), "ignored", "remains in exceptions")
+    http.Redirect(w, r, "/files", http.StatusSeeOther)
 }
