@@ -1,0 +1,12 @@
+audit.log
+*.exe
+*.out
+*.test
+*.dll
+*.so
+*.dylib
+
+/input/
+/quarantine/
+/output/
+/exceptions/

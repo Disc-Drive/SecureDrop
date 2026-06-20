@@ -1,0 +1,12 @@
+rules:
+  - name: invoices
+    contains:
+      - invoice
+      - amount due
+    move_to: invoices
+
+  - name: reports
+    contains:
+      - report
+      - summary
+    move_to: reports
