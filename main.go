@@ -347,6 +347,29 @@ func validateCSRFToken(token string) bool {
 	return true
 }
 
+// ------ Get Unique Categories ------
+
+func getUniqueCategories() []string {
+	categorySet := make(map[string]bool)
+
+	rulesMutex.RLock()
+	defer rulesMutex.RUnlock()
+
+	for _, rule := range rules {
+		if rule.MoveTo != "" {
+			categorySet[rule.MoveTo] = true
+		}
+	}
+
+	categories := make([]string, 0, len(categorySet))
+	for cat := range categorySet {
+		categories = append(categories, cat)
+	}
+
+	sort.Strings(categories)
+	return categories
+}
+
 // ------ Web Server ------
 
 func startWebServer() {
@@ -484,14 +507,24 @@ func renderPage(title string, active string, body string, csrfToken string) stri
             color: #0f172a;
             font-weight: bold;
         }
-        .action-buttons form {
-            display: inline-block;
-            margin-right: 5px;
+        .action-buttons {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+        .action-buttons select {
+            padding: 6px 10px;
+            font-size: 14px;
+            background: #334155;
+            color: #e2e8f0;
+            border: 1px solid #475569;
+            border-radius: 6px;
+            cursor: pointer;
         }
         .action-buttons button {
             padding: 6px 10px;
             font-size: 14px;
-            margin-right: 5px;
         }
         .move-btn {
             background: #10b981;
@@ -778,6 +811,14 @@ func renderExceptionTable(files []ListedFile) string {
 		return `<div class="empty">No exceptions yet.</div>`
 	}
 
+	categories := getUniqueCategories()
+	var categoryOptions strings.Builder
+
+	categoryOptions.WriteString(`<option value="">-- Select Category --</option>`)
+	for _, cat := range categories {
+		categoryOptions.WriteString(`<option value="` + html.EscapeString(cat) + `">` + html.EscapeString(cat) + `</option>`)
+	}
+
 	var b strings.Builder
 
 	b.WriteString(`
@@ -808,19 +849,16 @@ func renderExceptionTable(files []ListedFile) string {
                 <td>` + modified + `</td>
                 <td>
                     <div class="action-buttons">
-                        <form action="/moveException" method="post" style="display:inline;">
+                        <form action="/moveException" method="post" style="display:inline-flex; gap:5px; align-items:center;">
                             <input type="hidden" name="path" value="` + url.QueryEscape(file.FullPath) + `">
-                            <input type="hidden" name="category" value="invoices">
-                            <button type="submit" class="move-btn">Move to invoices</button>
-                        </form>
-                        <form action="/moveException" method="post" style="display:inline;">
-                            <input type="hidden" name="path" value="` + url.QueryEscape(file.FullPath) + `">
-                            <input type="hidden" name="category" value="reports">
-                            <button type="submit" class="move-btn">Move to reports</button>
+                            <select name="category" required>
+                                ` + categoryOptions.String() + `
+                            </select>
+                            <button type="submit" class="move-btn">Move</button>
                         </form>
                         <form action="/ignoreException" method="post" style="display:inline;">
                             <input type="hidden" name="path" value="` + url.QueryEscape(file.FullPath) + `">
-                            <button type="submit" class="ignore-btn">Ignore for now</button>
+                            <button type="submit" class="ignore-btn">Ignore</button>
                         </form>
                     </div>
                 </td>
